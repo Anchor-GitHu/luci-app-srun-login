@@ -35,6 +35,10 @@ function showResult(msg) {
 	el.style.display = 'block';
 }
 
+function getConfig() {
+	return postForm('config', { _: Date.now() });
+}
+
 return view.extend({
 	load: function() {
 		return Promise.resolve();
@@ -43,11 +47,13 @@ return view.extend({
 	doLogin: function() {
 		var username = document.getElementById('srun_username').value.trim();
 		var password = document.getElementById('srun_password').value;
+		var rememberEl = document.querySelector('#srun_remember input[type="checkbox"]');
+		var remember = (rememberEl && rememberEl.checked) ? '1' : '0';
 		if (!username || !password) {
 			ui.addNotification(null, E('p', _('账号和密码不能为空')), 'error');
 			return;
 		}
-		postForm('login', { username: username, password: password })
+		postForm('login', { username: username, password: password, remember: remember })
 			.then(function(res) { showResult(res.out || '已提交'); })
 			.catch(function(err) { showResult('失败: ' + err); });
 	},
@@ -58,6 +64,20 @@ return view.extend({
 			.catch(function(err) { showResult('失败: ' + err); });
 	},
 
+	clearSaved: function() {
+		// 取消勾选时立即清除已保存的账号密码
+		postForm('config', { save: '0', username: '', password: '' })
+			.then(function() {})
+			.catch(function() {});
+	},
+
+	onRememberChange: function() {
+		var rememberEl = document.querySelector('#srun_remember input[type="checkbox"]');
+		if (rememberEl && !rememberEl.checked) {
+			this.clearSaved();
+		}
+	},
+
 	handleSaveApply: function(ev, mode) {
 		return this.doLogin();
 	},
@@ -66,9 +86,29 @@ return view.extend({
 		var self = this;
 		var username = E('input', { 'class': 'cbi-input-text', 'type': 'text', 'id': 'srun_username', 'name': 'username' });
 		var password = E('input', { 'class': 'cbi-input-text', 'type': 'password', 'id': 'srun_password', 'name': 'password' });
+
+		var rememberBox = E('div', { 'class': 'cbi-checkbox', 'id': 'srun_remember' }, [
+			E('input', {
+				'type': 'checkbox',
+				'id': 'srun_remember_input',
+				'name': 'remember',
+				'value': '1',
+				'change': function() { self.onRememberChange(); }
+			}),
+			E('label', { 'for': 'srun_remember_input' })
+		]);
+
 		var loginBtn = E('button', { 'class': 'cbi-button cbi-button-apply', 'click': function() { self.doLogin(); } }, _('登录'));
 		var logoutBtn = E('button', { 'class': 'cbi-button cbi-button-reset', 'click': function() { self.doLogout(); } }, _('注销'));
 		var result = E('div', { 'id': 'srun_result', 'style': 'white-space:pre-wrap;display:none;' });
+
+		// 从已保存配置填充
+		var cfg = self._cfg || {};
+		if (cfg.save === '1' || cfg.save === 1) {
+			username.value = cfg.username || '';
+			password.value = cfg.password || '';
+			rememberBox.querySelector('input[type="checkbox"]').checked = true;
+		}
 
 		return E([], [
 			E('h2', {}, _('SRUN 校园网认证')),
@@ -82,6 +122,13 @@ return view.extend({
 					E('div', { 'class': 'cbi-value' }, [
 						E('label', { 'class': 'cbi-value-title' }, _('密码')),
 						E('div', { 'class': 'cbi-value-field' }, [ password ])
+					]),
+					E('div', { 'class': 'cbi-value' }, [
+						E('label', { 'class': 'cbi-value-title' }, _('记住账号密码')),
+						E('div', { 'class': 'cbi-value-field' }, [
+							rememberBox,
+							E('span', { 'class': 'cbi-value-description', 'style': 'margin-left:6px;' }, _('加密保存在路由器上'))
+						])
 					]),
 					E('div', { 'class': 'cbi-page-actions' }, [ loginBtn, logoutBtn ]),
 					result
