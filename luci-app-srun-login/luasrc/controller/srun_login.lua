@@ -5,6 +5,17 @@ local json = require "luci.jsonc"
 local http = require "luci.http"
 
 local UCI_CONF = "srun_login"
+local UCI_SECTION = "main"
+
+-- 确保 UCI 配置存在且有一个合法的 section
+local function ensure_config()
+	local ok = sys.exec("uci -q get " .. UCI_CONF .. "." .. UCI_SECTION .. " >/dev/null 2>&1 && echo yes")
+	if ok:match("yes") then
+		return
+	end
+	-- 创建 section（匿名命名 section）
+	sys.exec("uci -q set " .. UCI_CONF .. "." .. UCI_SECTION .. "=srun_login")
+end
 
 local function get_device_key()
 	-- 用设备 MAC 地址作为加密密钥（取第一个非回环网卡的 MAC）
@@ -102,12 +113,20 @@ local function decrypt_pwd(enc)
 end
 
 local function get_config_value(name, default)
-	return sys.exec("uci get " .. UCI_CONF .. "." .. name .. " 2>/dev/null"):gsub("\n", "") or default
+	local v = (sys.exec("uci -q get " .. UCI_CONF .. "." .. UCI_SECTION .. "." .. name .. " 2>/dev/null") or ""):gsub("\n", "")
+	if v == "" then
+		return default
+	end
+	return v
 end
 
 local function uci_set(key, value)
 	local v = value:gsub("'", "'\\''")
-	sys.exec("uci set " .. UCI_CONF .. "." .. key .. "='" .. v .. "'")
+	sys.exec("uci -q set " .. UCI_CONF .. "." .. UCI_SECTION .. "." .. key .. "='" .. v .. "'")
+end
+
+local function uci_del(key)
+	sys.exec("uci -q delete " .. UCI_CONF .. "." .. UCI_SECTION .. "." .. key .. " 2>/dev/null")
 end
 
 function index()
@@ -118,9 +137,6 @@ function index()
 end
 
 function action_config()
-	sys.exec("uci -q get " .. UCI_CONF .. " >/dev/null 2>&1 || touch /etc/config/" .. UCI_CONF)
-
-	local m = http.formvalue("_") or ""
 	local method = http.getenv("REQUEST_METHOD") or "GET"
 
 	if method == "POST" then
@@ -129,13 +145,14 @@ function action_config()
 		local save = http.formvalue("save") or "0"
 
 		if save == "1" and username ~= "" then
+			ensure_config()
 			uci_set("username", username)
 			uci_set("password", encrypt_pwd(password))
 			uci_set("save", "1")
 		else
-			sys.exec("uci -q delete " .. UCI_CONF .. ".username 2>/dev/null")
-			sys.exec("uci -q delete " .. UCI_CONF .. ".password 2>/dev/null")
-			sys.exec("uci -q delete " .. UCI_CONF .. ".save 2>/dev/null")
+			uci_del("username")
+			uci_del("password")
+			uci_del("save")
 		end
 		sys.exec("uci commit " .. UCI_CONF)
 
@@ -166,16 +183,16 @@ function action_login()
 
 	-- 若勾选记住，则保存加密配置
 	if remember == "1" then
-		sys.exec("uci -q get " .. UCI_CONF .. " >/dev/null 2>&1 || touch /etc/config/" .. UCI_CONF)
+		ensure_config()
 		uci_set("username", username)
 		uci_set("password", encrypt_pwd(password))
 		uci_set("save", "1")
 		sys.exec("uci commit " .. UCI_CONF)
 	else
-		sys.exec("uci -q delete " .. UCI_CONF .. ".username 2>/dev/null")
-		sys.exec("uci -q delete " .. UCI_CONF .. ".password 2>/dev/null")
-		sys.exec("uci -q delete " .. UCI_CONF .. ".save 2>/dev/null")
-		sys.exec("uci -q commit " .. UCI_CONF .. " 2>/dev/null")
+		uci_del("username")
+		uci_del("password")
+		uci_del("save")
+		sys.exec("uci commit " .. UCI_CONF .. " 2>/dev/null")
 	end
 
 	local cmd = string.format("python3 /usr/bin/SRUN_Login/srun_login.py --username %q --password %q 2>&1", username, password)

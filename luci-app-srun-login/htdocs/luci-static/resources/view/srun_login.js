@@ -36,18 +36,33 @@ function showResult(msg) {
 }
 
 function getConfig() {
-	return postForm('config', { _: Date.now() });
+	return new Promise(function(resolve, reject) {
+		var url = L.url('admin/services/srun_login', 'config');
+		var xhr = new XMLHttpRequest();
+		xhr.open('GET', url, true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.onreadystatechange = function() {
+			if (xhr.readyState !== 4) return;
+			if (xhr.status >= 200 && xhr.status < 300) {
+				try { resolve(JSON.parse(xhr.responseText)); }
+				catch (e) { resolve({}); }
+			} else {
+				resolve({});
+			}
+		};
+		xhr.send();
+	});
 }
 
 return view.extend({
 	load: function() {
-		return Promise.resolve();
+		return getConfig();
 	},
 
 	doLogin: function() {
 		var username = document.getElementById('srun_username').value.trim();
 		var password = document.getElementById('srun_password').value;
-		var rememberEl = document.querySelector('#srun_remember input[type="checkbox"]');
+		var rememberEl = document.getElementById('srun_remember');
 		var remember = (rememberEl && rememberEl.checked) ? '1' : '0';
 		if (!username || !password) {
 			ui.addNotification(null, E('p', _('账号和密码不能为空')), 'error');
@@ -72,7 +87,7 @@ return view.extend({
 	},
 
 	onRememberChange: function() {
-		var rememberEl = document.querySelector('#srun_remember input[type="checkbox"]');
+		var rememberEl = document.getElementById('srun_remember');
 		if (rememberEl && !rememberEl.checked) {
 			this.clearSaved();
 		}
@@ -82,32 +97,23 @@ return view.extend({
 		return this.doLogin();
 	},
 
-	render: function() {
+	render: function(cfg) {
 		var self = this;
 		var username = E('input', { 'class': 'cbi-input-text', 'type': 'text', 'id': 'srun_username', 'name': 'username' });
 		var password = E('input', { 'class': 'cbi-input-text', 'type': 'password', 'id': 'srun_password', 'name': 'password' });
 
-		var rememberBox = E('div', { 'class': 'cbi-checkbox', 'id': 'srun_remember' }, [
-			E('input', {
-				'type': 'checkbox',
-				'id': 'srun_remember_input',
-				'name': 'remember',
-				'value': '1',
-				'change': function() { self.onRememberChange(); }
-			}),
-			E('label', { 'for': 'srun_remember_input' })
-		]);
+		var remember = E('input', { 'type': 'checkbox', 'id': 'srun_remember', 'name': 'remember', 'value': '1', 'change': function() { self.onRememberChange(); } });
 
 		var loginBtn = E('button', { 'class': 'cbi-button cbi-button-apply', 'click': function() { self.doLogin(); } }, _('登录'));
 		var logoutBtn = E('button', { 'class': 'cbi-button cbi-button-reset', 'click': function() { self.doLogout(); } }, _('注销'));
 		var result = E('div', { 'id': 'srun_result', 'style': 'white-space:pre-wrap;display:none;' });
 
-		// 从已保存配置填充
-		var cfg = self._cfg || {};
-		if (cfg.save === '1' || cfg.save === 1) {
-			username.value = cfg.username || '';
-			password.value = cfg.password || '';
-			rememberBox.querySelector('input[type="checkbox"]').checked = true;
+		// 从已保存配置填充（cfg 为 load() 的返回值）
+		var c = cfg || {};
+		if (c.save === '1' || c.save === 1) {
+			username.value = c.username || '';
+			password.value = c.password || '';
+			remember.checked = true;
 		}
 
 		return E([], [
@@ -125,10 +131,7 @@ return view.extend({
 					]),
 					E('div', { 'class': 'cbi-value' }, [
 						E('label', { 'class': 'cbi-value-title' }, _('记住账号密码')),
-						E('div', { 'class': 'cbi-value-field' }, [
-							rememberBox,
-							E('span', { 'class': 'cbi-value-description', 'style': 'margin-left:6px;' }, _('加密保存在路由器上'))
-						])
+						E('div', { 'class': 'cbi-value-field' }, [ remember ])
 					]),
 					E('div', { 'class': 'cbi-page-actions' }, [ loginBtn, logoutBtn ]),
 					result

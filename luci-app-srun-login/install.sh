@@ -13,6 +13,6 @@ cp luasrc/controller/srun_login.lua /usr/lib/lua/luci/controller/srun_login.lua
 
 cp htdocs/luci-static/resources/view/srun_login.js /www/luci-static/resources/view/srun_login.js
 
-rm -f /tmp/luci-indexcache /tmp/luci-modulecache /tmp/luci-indexcache.* /tmp/luci-modulecache.* 2>/dev/null || true
+#rm -f /tmp/luci-indexcache /tmp/luci-modulecache /tmp/luci-indexcache.* /tmp/luci-modulecache.* 2>/dev/null || true
 
 echo "== 安装完成，请刷新 LuCI 页面，进入「服务 → SRUN 校园网」 =="
