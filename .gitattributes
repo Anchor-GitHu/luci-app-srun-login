@@ -1,1 +1,4 @@
-"*.sh text eol=lf" 
+"*.sh text eol=lf"
+"*.js text eol=lf"
+"*.lua text eol=lf"
+"*.py text eol=lf"
