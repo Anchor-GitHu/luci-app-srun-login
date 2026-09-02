@@ -11,6 +11,8 @@ local LOG_MAX_LINES = 500
 
 -- 确保 UCI 配置存在且有一个合法的 section
 local function ensure_config()
+	-- 新版 uci 要求配置文件先存在，否则 uci add 会报 Entry not found
+	sys.exec("touch /etc/config/" .. UCI_CONF .. " 2>/dev/null")
 	local ok = sys.exec("uci -q get " .. UCI_CONF .. ".main >/dev/null 2>&1 && echo yes")
 	if ok:match("yes") then
 		return
@@ -99,55 +101,23 @@ local function xor_crypt(data, key)
 	return table.concat(out)
 end
 
-local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local function base64_encode(data)
-	local out = {}
-	local i = 1
-	while i <= #data do
-		local b1 = data:byte(i)
-		local b2 = data:byte(i + 1) or 0
-		local b3 = data:byte(i + 2) or 0
-		local n = b1 * 65536 + b2 * 256 + b3
-		out[#out + 1] = b64chars:sub(math.floor(n / 262144) % 64 + 1, math.floor(n / 262144) % 64 + 1)
-		out[#out + 1] = b64chars:sub(math.floor(n / 4096) % 64 + 1, math.floor(n / 4096) % 64 + 1)
-		out[#out + 1] = (i + 1 <= #data) and b64chars:sub(math.floor(n / 64) % 64 + 1, math.floor(n / 64) % 64 + 1) or "="
-		out[#out + 1] = (i + 2 <= #data) and b64chars:sub(n % 64 + 1, n % 64 + 1) or "="
-		i = i + 3
-	end
-	return table.concat(out)
+-- 十六进制编码/解码（可靠，避免手写 base64 丢失末尾字节的问题）
+local function hex_encode(data)
+	return (data:gsub(".", function(c) return string.format("%02x", c:byte()) end))
 end
 
-local function base64_decode(data)
-	data = data:gsub("[^" .. b64chars .. "=]", "")
-	local out = {}
-	local i = 1
-	while i <= #data do
-		local c1 = (b64chars:find(data:sub(i, i), 1, true) or 0) - 1
-		local c2 = (b64chars:find(data:sub(i + 1, i + 1), 1, true) or 0) - 1
-		local c3 = (b64chars:find(data:sub(i + 2, i + 2), 1, true) or 0) - 1
-		local c4 = (b64chars:find(data:sub(i + 3, i + 3), 1, true) or 0) - 1
-		local n = c1 * 262144 + c2 * 4096 + c3 * 64 + c4
-		out[#out + 1] = string.char(math.floor(n / 65536) % 256)
-		if data:sub(i + 2, i + 2) ~= "=" then
-			out[#out + 1] = string.char(math.floor(n / 256) % 256)
-		end
-		if data:sub(i + 3, i + 3) ~= "=" then
-			out[#out + 1] = string.char(n % 256)
-		end
-		i = i + 4
-	end
-	return table.concat(out)
+local function hex_decode(s)
+	if not s or s == "" then return "" end
+	return (s:gsub("%x%x", function(h) return string.char(tonumber(h, 16)) end))
 end
 
 local function encrypt_pwd(plain)
-	return base64_encode(xor_crypt(plain, get_device_key()))
+	return hex_encode(xor_crypt(plain, get_device_key()))
 end
 
 local function decrypt_pwd(enc)
 	if not enc or enc == "" then return "" end
-	local ok, raw = pcall(base64_decode, enc)
-	if not ok then return "" end
-	return xor_crypt(raw, get_device_key())
+	return xor_crypt(hex_decode(enc), get_device_key())
 end
 
 local function get_config_value(name, default)

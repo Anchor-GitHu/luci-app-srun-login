@@ -117,19 +117,29 @@ return view.extend({
 				});
 		};
 
-		// 先询问是否保存当前账号密码
-		this.confirmSave(username, operator, function(save) {
-			if (save) {
-				postForm('config', { action: 'save', username: username, password: password, operator: operator })
-					.then(function(res) {
-						self.log(_('账号已保存: ') + (res.account && res.account.name ? res.account.name : username));
-						if (res.account)
-							self.addAccountTab(res.account);
-					})
-					.catch(function(err) { self.log(_('保存失败: ') + err); });
-			}
+		var doSave = function() {
+			postForm('config', { action: 'save', username: username, password: password, operator: operator })
+				.then(function(res) {
+					self.log(_('账号已保存: ') + (res.account && res.account.name ? res.account.name : username));
+					if (res.account)
+						self.addAccountTab(res.account);
+				})
+				.catch(function(err) { self.log(_('保存失败: ') + err); });
+		};
+
+		// 先检测是否已保存过（username + operator 同时相同）
+		var existing = this.findAccountTab({ username: username, operator: operator });
+		if (existing) {
+			// 已保存，直接登录，不询问
 			doSubmit();
-		});
+		} else {
+			// 未保存，询问是否保存
+			this.confirmSave(username, operator, function(save) {
+				if (save)
+					doSave();
+				doSubmit();
+			});
+		}
 	},
 
 	confirmSave: function(username, operator, cb) {
@@ -188,21 +198,37 @@ return view.extend({
 
 	makeAccountTab: function(acc) {
 		var self = this;
+		var label = E('span', { 'class': 'srun-tab-label' }, acc.name || acc.username);
 		var tab = E('span', {
 			'class': 'srun-tab',
-			'click': function() { self.selectAccount(acc); }
+			'click': function() { self.selectAccount(tab._acc || acc); }
 		}, [
-			acc.name || acc.username,
+			label,
 			E('span', {
 				'class': 'srun-tab-close',
 				'title': _('删除该账号'),
 				'click': function(ev) {
 					ev.stopPropagation();
-					self.deleteAccount(acc.id, tab);
+					var cur = tab._acc || acc;
+					self.deleteAccount(cur.id, tab);
 				}
 			}, '×')
 		]);
+		tab._acc = acc;
 		return tab;
+	},
+
+	// 按 username + operator 查找已存在的标签，不存在返回 null
+	findAccountTab: function(acc) {
+		var box = this._tabBox;
+		if (!box) return null;
+		for (var i = 0; i < box.children.length; i++) {
+			var t = box.children[i];
+			var a = t._acc;
+			if (a && a.username === acc.username && (a.operator || '') === (acc.operator || ''))
+				return t;
+		}
+		return null;
 	},
 
 	addAccountTab: function(acc) {
@@ -221,6 +247,19 @@ return view.extend({
 			if (actions && actions.parentNode)
 				actions.parentNode.insertBefore(tabsRow, actions);
 		}
+
+		// 去重：同账号+运营商已存在则更新引用与标签文本，不重复添加
+		var existing = this.findAccountTab(acc);
+		if (existing) {
+			existing._acc = acc;
+			var label = existing.querySelector('.srun-tab-label');
+			if (label)
+				label.textContent = acc.name || acc.username;
+			if (this._tabsRow)
+				this._tabsRow.style.display = '';
+			return;
+		}
+
 		box.appendChild(this.makeAccountTab(acc));
 		if (this._tabsRow)
 			this._tabsRow.style.display = '';
