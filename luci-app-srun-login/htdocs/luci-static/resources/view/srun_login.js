@@ -172,16 +172,36 @@ return view.extend({
 			});
 	},
 
-	deleteAccount: function(id, tabEl) {
+	deleteAccount: function(acc) {
 		var self = this;
-		postForm('config', { action: 'delete', name: id })
+		postForm('config', { action: 'delete', username: acc.username, operator: acc.operator || '' })
 			.then(function() {
-				if (tabEl && tabEl.parentNode)
-					tabEl.parentNode.removeChild(tabEl);
-				if (self._tabBox && self._tabBox.children.length === 0 && self._tabsRow)
-					self._tabsRow.style.display = 'none';
+				self.log(_('已删除账号: ') + (acc.name || acc.username));
+				// 删除后重新拉取列表，重建标签，避免索引过期导致残留/错位
+				self.reloadAccounts();
 			})
-			.catch(function(err) { showResult('删除失败: ' + err); });
+			.catch(function(err) { self.log(_('删除失败: ') + err); });
+	},
+
+	reloadAccounts: function() {
+		var self = this;
+		getConfig().then(function(data) {
+			var accounts = (data && data.accounts) || [];
+			self.renderAccounts(accounts);
+		});
+	},
+
+	renderAccounts: function(accounts) {
+		var self = this;
+		var box = this._tabBox;
+		if (!box) return;
+		box.innerHTML = '';
+		accounts.forEach(function(acc) {
+			box.appendChild(self.makeAccountTab(acc));
+		});
+		if (this._tabsRow) {
+			this._tabsRow.style.display = accounts.length > 0 ? '' : 'none';
+		}
 	},
 
 	selectAccount: function(acc) {
@@ -210,7 +230,7 @@ return view.extend({
 				'click': function(ev) {
 					ev.stopPropagation();
 					var cur = tab._acc || acc;
-					self.deleteAccount(cur.id, tab);
+					self.deleteAccount(cur);
 				}
 			}, '×')
 		]);
@@ -347,13 +367,13 @@ return view.extend({
 		return E([], [
 			E('style', { 'type': 'text/css' }, [
 				'.srun-accounts { display:flex; flex-wrap:wrap; gap:6px; }',
-				'.srun-tab { display:inline-flex; align-items:center; padding:4px 10px; border:1px solid #999; border-radius:3px; background:#f5f5f5; cursor:pointer; user-select:none; }',
-				'.srun-tab:hover { background:#e0e0e0; }',
-				'.srun-tab-close { margin-left:8px; font-weight:bold; color:#c00; cursor:pointer; padding:0 4px; }',
-				'.srun-tab-close:hover { color:#800; }',
-				'.srun-log { margin-top:10px; padding:10px; border:1px solid #ccc; border-radius:3px; background:#000; color:#0f0; font-family:monospace; font-size:12px; max-height:240px; min-height:120px; overflow-y:auto; white-space:pre-wrap; }',
+				'.srun-tab { display:inline-flex; align-items:center; padding:4px 10px; border:1px solid var(--border-color, #999); border-radius:3px; background:var(--background-color-light, #f5f5f5); color:var(--text-color, #333); cursor:pointer; user-select:none; }',
+				'.srun-tab:hover { background:var(--background-color, #e0e0e0); }',
+				'.srun-tab-close { margin-left:8px; font-weight:bold; color:var(--danger-color, #c00); cursor:pointer; padding:0 4px; }',
+				'.srun-tab-close:hover { color:var(--danger-color-dark, #800); }',
+				'.srun-log { margin-top:10px; padding:10px; border:1px solid var(--border-color, #ccc); border-radius:3px; background:var(--log-bg, #1e1e1e); color:var(--log-fg, #8bc34a); font-family:monospace; font-size:12px; max-height:240px; min-height:120px; overflow-y:auto; white-space:pre-wrap; }',
 				'.srun-log-line { margin:0; }',
-				'.srun-log-ts { color:#888; }'
+				'.srun-log-ts { color:var(--muted-color, #888); }'
 			]),
 			E('h2', {}, _('SRUN 校园网认证')),
 			E('div', { 'class': 'cbi-map' }, [

@@ -200,10 +200,18 @@ function action_config()
 		local username = http.formvalue("username") or ""
 		local password = http.formvalue("password") or ""
 		local name = http.formvalue("name") or ""
+		local operator = http.formvalue("operator") or ""
 
-		if action == "delete" and name ~= "" then
-			-- 删除指定账号（name 为索引 i，对应 @account[i]）
-			sys.exec("uci -q delete " .. UCI_CONF .. ".@account[" .. name:gsub("%D", "") .. "] 2>/dev/null")
+		if action == "delete" and username ~= "" then
+			-- 按 username + operator 精确删除，避免索引重排导致删错/残留
+			for _, idx in ipairs(list_account_indexes()) do
+				local uname = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].username 2>/dev/null") or ""):gsub("\n", "")
+				local uop = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].operator 2>/dev/null") or ""):gsub("\n", "")
+				if uname == username and uop == operator then
+					sys.exec("uci -q delete " .. UCI_CONF .. ".@account[" .. idx .. "] 2>/dev/null")
+					break
+				end
+			end
 			sys.exec("uci commit " .. UCI_CONF)
 			http.prepare_content("application/json")
 			http.write(json.stringify({ok = true}))
