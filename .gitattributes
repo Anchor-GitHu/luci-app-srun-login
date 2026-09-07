@@ -1,4 +1,8 @@
-"*.sh text eol=lf"
-"*.js text eol=lf"
-"*.lua text eol=lf"
-"*.py text eol=lf"
+*.sh text eol=lf
+*.js text eol=lf
+*.lua text eol=lf
+*.py text eol=lf
+
+# 无扩展名的 init 启动脚本（如 root/etc/init.d/srun_login）
+**/init.d/* text eol=lf
+srun_login text eol=lf
