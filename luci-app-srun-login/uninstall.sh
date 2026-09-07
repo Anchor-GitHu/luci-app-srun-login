@@ -6,6 +6,8 @@ rm -rf /usr/bin/SRUN_Login
 rm -f /usr/lib/lua/luci/controller/srun_login.lua
 rm -f /www/luci-static/resources/view/srun_login.js
 rm -f /var/log/srun_login.log
+/etc/init.d/srun_login disable 2>/dev/null
+rm -f /etc/init.d/srun_login
 
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache /tmp/luci-indexcache.* /tmp/luci-modulecache.* 2>/dev/null || true
 

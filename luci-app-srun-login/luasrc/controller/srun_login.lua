@@ -1,25 +1,17 @@
-module("luci.controller.srun_login", package.seeall)
+local M = {}
 
 local sys = require "luci.sys"
 local json = require "luci.jsonc"
 local http = require "luci.http"
 
 local UCI_CONF = "srun_login"
-local UCI_SECTION = "main"
 local LOG_FILE = "/var/log/srun_login.log"
 local LOG_MAX_LINES = 500
 
--- 确保 UCI 配置存在且有一个合法的 section
+-- 确保 UCI 配置文件存在（新版 uci 要求文件先存在，否则 uci add 报 Entry not found）
+-- 注意：不再创建 main section（历史遗留），仅确保文件存在即可
 local function ensure_config()
-	-- 新版 uci 要求配置文件先存在，否则 uci add 会报 Entry not found
 	sys.exec("touch /etc/config/" .. UCI_CONF .. " 2>/dev/null")
-	local ok = sys.exec("uci -q get " .. UCI_CONF .. ".main >/dev/null 2>&1 && echo yes")
-	if ok:match("yes") then
-		return
-	end
-	-- 新版 uci 用 uci add 创建 section
-	sys.exec("uci add " .. UCI_CONF .. " main 2>/dev/null")
-	sys.exec("uci commit " .. UCI_CONF .. " 2>/dev/null")
 end
 
 -- 追加一条日志到日志文件
@@ -120,23 +112,6 @@ local function decrypt_pwd(enc)
 	return xor_crypt(hex_decode(enc), get_device_key())
 end
 
-local function get_config_value(name, default)
-	local v = (sys.exec("uci -q get " .. UCI_CONF .. "." .. UCI_SECTION .. "." .. name .. " 2>/dev/null") or ""):gsub("\n", "")
-	if v == "" then
-		return default
-	end
-	return v
-end
-
-local function uci_set(key, value)
-	local v = value:gsub("'", "'\\''")
-	sys.exec("uci -q set " .. UCI_CONF .. "." .. UCI_SECTION .. "." .. key .. "='" .. v .. "'")
-end
-
-local function uci_del(key)
-	sys.exec("uci -q delete " .. UCI_CONF .. "." .. UCI_SECTION .. "." .. key .. " 2>/dev/null")
-end
-
 -- 运营商后缀映射（登录脚本通过用户名后缀区分运营商）
 local OPERATOR_SUFFIX = {
 	["cmcc"] = "cmcc",
@@ -167,9 +142,8 @@ local function save_account(username, password, operator)
 
 	local idx = exist_idx
 	if idx == nil then
-		-- 用 uci add 创建匿名 section（新版 uci 支持的唯一方式）
-		local newname = (sys.exec("uci add " .. UCI_CONF .. " account 2>/dev/null") or ""):gsub("%s", "")
-		-- uci add 返回匿名名 cfgXXXX，但也可直接用 @account[最后一个] 定位；这里重新取最大索引
+		-- 用 uci add 创建匿名 section，并取最后（最大）索引定位
+		sys.exec("uci add " .. UCI_CONF .. " account 2>/dev/null")
 		local idxes = list_account_indexes()
 		idx = #idxes > 0 and idxes[#idxes] or 0
 	end
@@ -184,7 +158,7 @@ local function save_account(username, password, operator)
 	return { id = tostring(idx), name = disp, username = username, operator = (operator or ""), password = password }
 end
 
-function index()
+function M.index()
 	entry({"admin", "services", "srun_login"}, view("srun_login"), _("SRUN 校园网"), 80).dependent = true
 	entry({"admin", "services", "srun_login", "login"}, call("action_login")).leaf = true
 	entry({"admin", "services", "srun_login", "logout"}, call("action_logout")).leaf = true
@@ -192,14 +166,13 @@ function index()
 	entry({"admin", "services", "srun_login", "log"}, call("action_log")).leaf = true
 end
 
-function action_config()
+function M.action_config()
 	local method = http.getenv("REQUEST_METHOD") or "GET"
 
 	if method == "POST" then
 		local action = http.formvalue("action") or ""
 		local username = http.formvalue("username") or ""
 		local password = http.formvalue("password") or ""
-		local name = http.formvalue("name") or ""
 		local operator = http.formvalue("operator") or ""
 
 		if action == "delete" and username ~= "" then
@@ -228,6 +201,40 @@ function action_config()
 			return
 		end
 
+		if action == "autologin" then
+			-- 设置开机自动登录：将指定账号（username + operator）标记为 autologin=1，并清除其他账号
+			local enabled = http.formvalue("enabled") or ""
+			local username = http.formvalue("username") or ""
+			local operator = http.formvalue("operator") or ""
+			ensure_config()
+			if enabled == "1" and username ~= "" then
+				-- 先清除所有账号的 autologin 标记，保证唯一性
+				for _, idx in ipairs(list_account_indexes()) do
+					sys.exec("uci -q delete " .. UCI_CONF .. ".@account[" .. idx .. "].autologin 2>/dev/null")
+				end
+				-- 再为目标账号置位
+				for _, idx in ipairs(list_account_indexes()) do
+					local uname = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].username 2>/dev/null") or ""):gsub("\n", "")
+					local uop = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].operator 2>/dev/null") or ""):gsub("\n", "")
+					if uname == username and uop == operator then
+						sys.exec("uci -q set " .. UCI_CONF .. ".@account[" .. idx .. "].autologin='1'")
+						break
+					end
+				end
+				append_log("已设置开机自动登录账号: " .. username .. (operator ~= "" and ("@" .. operator) or ""))
+			else
+				-- 关闭：清除所有账号的 autologin 标记
+				for _, idx in ipairs(list_account_indexes()) do
+					sys.exec("uci -q delete " .. UCI_CONF .. ".@account[" .. idx .. "].autologin 2>/dev/null")
+				end
+				append_log("已关闭开机自动登录")
+			end
+			sys.exec("uci commit " .. UCI_CONF .. " 2>/dev/null")
+			http.prepare_content("application/json")
+			http.write(json.stringify({ok = true}))
+			return
+		end
+
 		http.prepare_content("application/json")
 		http.write(json.stringify({ok = false, msg = "参数错误"}))
 		return
@@ -236,18 +243,19 @@ function action_config()
 	-- GET：返回所有已保存的账号
 	local accounts = {}
 	for _, idx in ipairs(list_account_indexes()) do
-		local ref = ".@account[" .. idx .. "]"
-		local uname = (sys.exec("uci -q get " .. UCI_CONF .. ref .. ".username 2>/dev/null") or ""):gsub("\n", "")
-		local pwd = (sys.exec("uci -q get " .. UCI_CONF .. ref .. ".password 2>/dev/null") or ""):gsub("\n", "")
-		local nm = (sys.exec("uci -q get " .. UCI_CONF .. ref .. ".name 2>/dev/null") or ""):gsub("\n", "")
-		local op = (sys.exec("uci -q get " .. UCI_CONF .. ref .. ".operator 2>/dev/null") or ""):gsub("\n", "")
+		local uname = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].username 2>/dev/null") or ""):gsub("\n", "")
+		local pwd = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].password 2>/dev/null") or ""):gsub("\n", "")
+		local nm = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].name 2>/dev/null") or ""):gsub("\n", "")
+		local op = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].operator 2>/dev/null") or ""):gsub("\n", "")
+		local auto = (sys.exec("uci -q get " .. UCI_CONF .. ".@account[" .. idx .. "].autologin 2>/dev/null") or ""):gsub("\n", "")
 		if uname ~= "" then
 			accounts[#accounts + 1] = {
 				id = tostring(idx),
 				name = nm,
 				username = uname,
 				operator = op,
-				password = decrypt_pwd(pwd)
+				password = decrypt_pwd(pwd),
+				autologin = (auto == "1")
 			}
 		end
 	end
@@ -256,7 +264,7 @@ function action_config()
 	http.write(json.stringify({accounts = accounts}))
 end
 
-function action_login()
+function M.action_login()
 	local username = http.formvalue("username") or ""
 	local password = http.formvalue("password") or ""
 	local operator = http.formvalue("operator") or ""
@@ -281,14 +289,14 @@ function action_login()
 	http.write(json.stringify({ok = true, out = out}))
 end
 
-function action_logout()
+function M.action_logout()
 	local out = sys.exec("python3 /usr/bin/SRUN_Login/srun_login.py --logout 2>&1")
 	append_log("注销:\n" .. out)
 	http.prepare_content("application/json")
 	http.write(json.stringify({ok = true, out = out}))
 end
 
-function action_log()
+function M.action_log()
 	local method = http.getenv("REQUEST_METHOD") or "GET"
 	if method == "POST" then
 		-- 清空日志
@@ -301,3 +309,5 @@ function action_log()
 	http.prepare_content("application/json")
 	http.write(json.stringify({log = read_log()}))
 end
+
+return M

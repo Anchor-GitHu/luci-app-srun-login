@@ -95,6 +95,48 @@ return view.extend({
 		return (el && el.value) ? el.value : '';
 	},
 
+	// 切换某账号的开机自动登录（单选：勾选一个会取消其他账号的勾选）
+	// 统一同步：checkbox 勾选态、卡片高亮、徽章、acc.autologin 全部一致
+	toggleAccountAutologin: function(acc, checked) {
+		var self = this;
+
+		// 遍历所有卡片，按「目标账号是否等于当前账号」统一设置状态
+		var box = this._tabBox;
+		if (box) {
+			for (var i = 0; i < box.children.length; i++) {
+				var t = box.children[i];
+				var isTarget = (t._acc === acc);
+				var on = checked && isTarget;
+				if (t._acc) t._acc.autologin = on;
+				var cb = t.querySelector('.srun-autologin-cb');
+				if (cb) cb.checked = on;
+				var badge = t.querySelector('.srun-badge');
+				if (badge) {
+					badge.className = on ? 'srun-badge srun-badge-auto' : 'srun-badge srun-badge-idle';
+					badge.textContent = on ? _('自动') : _('未启用');
+				}
+				if (on)
+					t.classList.add('srun-tab-active');
+				else
+					t.classList.remove('srun-tab-active');
+			}
+		}
+
+		postForm('config', {
+			action: 'autologin',
+			enabled: checked ? '1' : '0',
+			username: acc.username,
+			operator: acc.operator || ''
+		})
+			.then(function() {
+				self.log(checked ? _('已设置开机自动登录: ') + (acc.name || acc.username)
+						: _('已取消开机自动登录: ') + (acc.name || acc.username));
+			})
+			.catch(function(err) {
+				self.log(_('设置开机自动登录失败: ') + err);
+			});
+	},
+
 	doLogin: function() {
 		var self = this;
 		var username = document.getElementById('srun_username').value.trim();
@@ -172,15 +214,36 @@ return view.extend({
 			});
 	},
 
-	deleteAccount: function(acc) {
+	deleteAccount: function(acc, card) {
 		var self = this;
-		postForm('config', { action: 'delete', username: acc.username, operator: acc.operator || '' })
-			.then(function() {
-				self.log(_('已删除账号: ') + (acc.name || acc.username));
-				// 删除后重新拉取列表，重建标签，避免索引过期导致残留/错位
-				self.reloadAccounts();
-			})
-			.catch(function(err) { self.log(_('删除失败: ') + err); });
+		// 若有卡片，先播放删除动画（塌陷 + 位移），动画结束后再做删除请求
+		var doDelete = function() {
+			postForm('config', { action: 'delete', username: acc.username, operator: acc.operator || '' })
+				.then(function() {
+					self.log(_('已删除账号: ') + (acc.name || acc.username));
+					// 删除后重新拉取列表，重建卡片，避免索引过期导致残留/错位
+					self.reloadAccounts();
+				})
+				.catch(function(err) { self.log(_('删除失败: ') + err); });
+		};
+
+		if (card && card.classList) {
+			card.classList.add('srun-tab-removing');
+			// 监听过渡结束，或兜底用定时器
+			var done = false;
+			var finish = function() {
+				if (done) return;
+				done = true;
+				doDelete();
+			};
+			card.addEventListener('transitionend', function(ev) {
+				if (ev.propertyName === 'height' || ev.propertyName === 'opacity')
+					finish();
+			});
+			setTimeout(finish, 350);
+		} else {
+			doDelete();
+		}
 	},
 
 	reloadAccounts: function() {
@@ -218,21 +281,54 @@ return view.extend({
 
 	makeAccountTab: function(acc) {
 		var self = this;
-		var label = E('span', { 'class': 'srun-tab-label' }, acc.name || acc.username);
-		var tab = E('span', {
-			'class': 'srun-tab',
+		var name = acc.name || acc.username;
+		// 展示用账号串：用户名（无运营商时不展示后缀）
+		var displayUser = acc.username + (acc.operator ? ('@' + acc.operator) : '');
+		var isAuto = !!acc.autologin;
+
+		// 状态徽章（简短）
+		var badge = isAuto
+			? E('span', { 'class': 'srun-badge srun-badge-auto' }, _('自动'))
+			: E('span', { 'class': 'srun-badge srun-badge-idle' }, _('未启用'));
+
+		// 自动登录开关（原生 checkbox）
+		var autoCb = E('input', {
+			'class': 'srun-autologin-cb',
+			'type': 'checkbox',
+			'checked': isAuto ? 'checked' : null,
+			'change': function(ev) {
+				ev.stopPropagation();
+				self.toggleAccountAutologin(tab._acc || acc, this.checked);
+			}
+		});
+		var autoWrap = E('label', {
+			'class': 'srun-autologin-wrap',
+			'title': _('设为开机自动登录')
+		}, [ autoCb, E('span', { 'class': 'srun-autologin-text' }, _('自动登录')) ]);
+
+		// 删除按钮（轻量文字样式）
+		var delBtn = E('a', {
+			'class': 'srun-tab-delete',
+			'title': _('删除该账号'),
+			'click': function(ev) {
+				ev.stopPropagation();
+				self.deleteAccount(tab._acc || acc, tab);
+			}
+		}, _('删除'));
+
+		var tab = E('div', {
+			'class': 'srun-tab' + (isAuto ? ' srun-tab-active' : ''),
 			'click': function() { self.selectAccount(tab._acc || acc); }
 		}, [
-			label,
-			E('span', {
-				'class': 'srun-tab-close',
-				'title': _('删除该账号'),
-				'click': function(ev) {
-					ev.stopPropagation();
-					var cur = tab._acc || acc;
-					self.deleteAccount(cur);
-				}
-			}, '×')
+			E('div', { 'class': 'srun-tab-head' }, [
+				E('span', { 'class': 'srun-tab-name' }, name),
+				badge
+			]),
+			E('div', { 'class': 'srun-tab-info' }, displayUser),
+			E('div', { 'class': 'srun-tab-foot' }, [
+				autoWrap,
+				delBtn
+			])
 		]);
 		tab._acc = acc;
 		return tab;
@@ -255,34 +351,31 @@ return view.extend({
 		var self = this;
 		var box = this._tabBox;
 		if (!box) {
-			// 初始无已保存账号时，动态创建标签容器
+			// 初始无已保存账号时，动态创建右侧栏并追加到左右分栏容器
 			box = E('div', { 'class': 'srun-accounts' });
 			this._tabBox = box;
-			var tabsRow = E('div', { 'class': 'cbi-value' }, [
-				E('label', { 'class': 'cbi-value-title' }, _('已保存账号')),
-				E('div', { 'class': 'cbi-value-field' }, [ box ])
+			var tabsCol = E('div', { 'class': 'srun-right' }, [
+				E('div', { 'class': 'srun-right-title' }, _('已保存账号')),
+				box,
+				E('div', { 'class': 'srun-autologin-hint' }, _('勾选卡片右下角“自动登录”复选框即可设为开机自动登录（仅一个）'))
 			]);
-			this._tabsRow = tabsRow;
-			var actions = document.querySelector('.cbi-page-actions');
-			if (actions && actions.parentNode)
-				actions.parentNode.insertBefore(tabsRow, actions);
+			this._tabsRow = tabsCol;
+			var layout = document.querySelector('.srun-layout');
+			if (layout)
+				layout.appendChild(tabsCol);
 		}
 
 		// 去重：同账号+运营商已存在则更新引用与标签文本，不重复添加
 		var existing = this.findAccountTab(acc);
 		if (existing) {
 			existing._acc = acc;
-			var label = existing.querySelector('.srun-tab-label');
-			if (label)
-				label.textContent = acc.name || acc.username;
-			if (this._tabsRow)
-				this._tabsRow.style.display = '';
+			var nameEl = existing.querySelector('.srun-tab-name');
+			if (nameEl)
+				nameEl.textContent = acc.name || acc.username;
 			return;
 		}
 
 		box.appendChild(this.makeAccountTab(acc));
-		if (this._tabsRow)
-			this._tabsRow.style.display = '';
 	},
 
 	handleSaveApply: function(ev, mode) {
@@ -325,22 +418,23 @@ return view.extend({
 		var accounts = (data && data.accounts) || [];
 		self._tabBox = null;
 		self._tabsRow = null;
-		var tabsRow = null;
+		var tabsCol = null;
 		if (accounts.length > 0) {
 			var tabBox = E('div', { 'class': 'srun-accounts' });
 			accounts.forEach(function(acc) {
 				tabBox.appendChild(self.makeAccountTab(acc));
 			});
 			self._tabBox = tabBox;
-			tabsRow = E('div', { 'class': 'cbi-value' }, [
-				E('label', { 'class': 'cbi-value-title' }, _('已保存账号')),
-				E('div', { 'class': 'cbi-value-field' }, [ tabBox ])
+			tabsCol = E('div', { 'class': 'srun-right' }, [
+				E('div', { 'class': 'srun-right-title' }, _('已保存账号')),
+				tabBox,
+				E('div', { 'class': 'srun-autologin-hint' }, _('勾选卡片右下角“自动登录”复选框即可设为开机自动登录（仅一个）'))
 			]);
-			self._tabsRow = tabsRow;
+			self._tabsRow = tabsCol;
 		}
 
-		// 组装界面主体内容（仅在有账号时才加入已保存账号行，避免渲染 null）
-		var sectionChildren = [
+		// 左栏：登录表单
+		var leftCol = E('div', { 'class': 'srun-left' }, [
 			E('div', { 'class': 'cbi-section-descr' }, _('填写账号密码、选择运营商后点击登录。')),
 			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title' }, _('账号（学号）')),
@@ -353,32 +447,54 @@ return view.extend({
 			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title' }, _('运营商')),
 				E('div', { 'class': 'cbi-value-field' }, [ operator ])
-			])
-		];
-		if (tabsRow)
-			sectionChildren.push(tabsRow);
-		sectionChildren.push(
-			E('div', { 'class': 'cbi-page-actions' }, [ loginBtn, logoutBtn ]),
-			E('div', { 'class': 'cbi-section-descr' }, _('运行日志')),
-			E('div', {}, [ logBox ]),
-			E('div', { 'class': 'cbi-page-actions' }, [ clearBtn ])
-		);
+			]),
+			E('div', { 'class': 'cbi-page-actions' }, [ loginBtn, logoutBtn ])
+		]);
 
+		// 左右分栏容器（有账号时右侧显示账号列表，否则只显示左栏）
+		var layoutChildren = [ leftCol ];
+		if (tabsCol)
+			layoutChildren.push(tabsCol);
+		var layout = E('div', { 'class': 'srun-layout' }, layoutChildren);
+
+		// 页面主体：标题 + 左右分栏 + 日志
 		return E([], [
 			E('style', { 'type': 'text/css' }, [
-				'.srun-accounts { display:flex; flex-wrap:wrap; gap:6px; }',
-				'.srun-tab { display:inline-flex; align-items:center; padding:4px 10px; border:1px solid var(--border-color, #999); border-radius:3px; background:var(--background-color-light, #f5f5f5); color:var(--text-color, #333); cursor:pointer; user-select:none; }',
-				'.srun-tab:hover { background:var(--background-color, #e0e0e0); }',
-				'.srun-tab-close { margin-left:8px; font-weight:bold; color:var(--danger-color, #c00); cursor:pointer; padding:0 4px; }',
-				'.srun-tab-close:hover { color:var(--danger-color-dark, #800); }',
-				'.srun-log { margin-top:10px; padding:10px; border:1px solid var(--border-color, #ccc); border-radius:3px; background:var(--log-bg, #1e1e1e); color:var(--log-fg, #8bc34a); font-family:monospace; font-size:12px; max-height:240px; min-height:120px; overflow-y:auto; white-space:pre-wrap; }',
+				'.srun-layout { display:flex; flex-wrap:wrap; gap:20px; align-items:flex-start; max-width:900px; margin:0 auto; }',
+				'.srun-left { flex:1 1 380px; min-width:300px; max-width:520px; margin:0 auto; }',
+				'.srun-right { flex:0 1 300px; min-width:240px; }',
+				'.srun-right-title { display:flex; align-items:center; gap:6px; font-size:14px; font-weight:600; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--border-color, #ddd); }',
+				'.srun-accounts { display:flex; flex-direction:column; gap:8px; width:100%; }',
+				'.srun-tab { position:relative; display:block; padding:8px 10px; border:1px solid var(--border-color, #d9d9d9); border-radius:5px; background:var(--background-color-light, #fafafa); color:var(--text-color, #333); cursor:pointer; user-select:none; transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease, opacity .3s ease, height .3s ease, margin .3s ease, padding .3s ease; overflow:hidden; }',
+				'.srun-tab:hover { border-color:var(--active-color, #3b8bd6); background:var(--background-color, #eef3f8); box-shadow:0 2px 8px rgba(59,139,214,.25); transform:translateY(-1px); }',
+				'.srun-tab-active { border-color:var(--active-color, #3b8bd6); background:var(--active-bg, #eef5fc); }',
+				'.srun-tab-active:hover { border-color:var(--active-color, #3b8bd6); background:var(--active-bg, #eef5fc); box-shadow:0 2px 8px rgba(59,139,214,.3); transform:translateY(-1px); }',
+				'.srun-tab-head { display:flex; align-items:center; justify-content:space-between; gap:6px; }',
+				'.srun-tab-name { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
+				'.srun-tab-info { margin-top:1px; font-size:11px; color:var(--muted-color, #999); font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
+				'.srun-tab-foot { display:flex; align-items:center; justify-content:space-between; margin-top:6px; gap:6px; }',
+				'.srun-badge { display:inline-block; padding:1px 6px; border-radius:9px; font-size:10px; line-height:1.5; white-space:nowrap; flex-shrink:0; }',
+				'.srun-badge-auto { background:var(--success-bg, #d7f2e2); color:var(--success-color, #187a3b); }',
+				'.srun-badge-idle { background:var(--muted-bg, #ececec); color:var(--muted-color, #999); }',
+				'.srun-autologin-wrap { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }',
+				'.srun-autologin-cb { width:15px; height:15px; margin:0; cursor:pointer; vertical-align:middle; }',
+				'.srun-autologin-text { font-size:12px; color:var(--text-color, #555); user-select:none; }',
+				'.srun-tab-delete { font-size:11px; color:var(--danger-color, #c0392b); cursor:pointer; text-decoration:none; flex-shrink:0; }',
+				'.srun-tab-delete:hover { text-decoration:underline; }',
+				'.srun-autologin-hint { margin-top:6px; font-size:11px; color:var(--muted-color, #aaa); }',
+				'.srun-tab-removing { opacity:0; height:0 !important; margin-top:0 !important; margin-bottom:0 !important; padding-top:0 !important; padding-bottom:0 !important; border-width:0 !important; transform: translateX(40px); }',
+				'.srun-log-title { margin:16px auto 0; max-width:900px; font-size:14px; font-weight:600; }',
+				'.srun-log { margin:6px auto 0; max-width:900px; padding:8px 10px; border:1px solid var(--border-color, #ccc); border-radius:4px; background:var(--log-bg, #1e1e1e); color:var(--log-fg, #8bc34a); font-family:monospace; font-size:12px; max-height:200px; min-height:90px; overflow-y:auto; white-space:pre-wrap; line-height:1.6; }',
 				'.srun-log-line { margin:0; }',
-				'.srun-log-ts { color:var(--muted-color, #888); }'
+				'.srun-log-ts { color:var(--muted-color, #888); }',
+				'.srun-title { max-width:900px; margin:0 auto 12px; }',
+				'.srun-actions { max-width:900px; margin:0 auto; }'
 			]),
-			E('h2', {}, _('SRUN 校园网认证')),
-			E('div', { 'class': 'cbi-map' }, [
-				E('div', { 'class': 'cbi-section' }, sectionChildren)
-			])
+			E('h2', { 'class': 'srun-title' }, _('SRUN 校园网认证')),
+			layout,
+			E('div', { 'class': 'srun-log-title' }, _('运行日志')),
+			E('div', {}, [ logBox ]),
+			E('div', { 'class': 'cbi-page-actions srun-actions' }, [ clearBtn ])
 		]);
 	}
 });

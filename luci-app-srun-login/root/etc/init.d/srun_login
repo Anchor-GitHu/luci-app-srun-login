@@ -1,0 +1,104 @@
+#!/bin/sh /etc/rc.common
+# SRUN 校园网开机自动登录
+# 读取 UCI 中保存的账号与加密密码，解密后调用后端脚本登录
+START=99
+
+UCI_CONF="srun_login"
+LOG_FILE="/var/log/srun_login.log"
+
+log_msg() {
+	local ts
+	ts=$(date "+%Y-%m-%d %H:%M:%S")
+	echo "[$ts] $1" >> "$LOG_FILE" 2>/dev/null
+}
+
+# 获取设备密钥（与控制器 luci.controller.srun_login 的 get_device_key 保持一致）
+get_device_key() {
+	local mac
+	mac=$(cat /sys/class/net/eth0/address 2>/dev/null | tr -d ':')
+	mac=$(echo "$mac" | tr -d '[:space:]')
+	if [ -z "$mac" ]; then
+		mac=$(awk 'NR==1{print}' /sys/class/net/eth*/address 2>/dev/null | tr -d ':')
+		mac=$(echo "$mac" | tr -d '[:space:]')
+	fi
+	if [ -z "$mac" ]; then
+		mac="srun-default-key-2024"
+	fi
+	echo "$mac"
+}
+
+# XOR 解密：hex 字符串 + 密钥 -> 明文
+# 密钥每字节与数据循环异或
+decrypt_pwd() {
+	local enc="$1"
+	local key="$2"
+	local klen i b kb val out c
+	[ -z "$enc" ] && { echo ""; return; }
+	[ -z "$key" ] && { echo "$enc"; return; }
+
+	klen=${#key}
+	# 将 hex 转为字节（用 od 或逐两位处理）
+	local hexbytes
+	hexbytes=$(echo "$enc" | sed 's/../0x&\n/g')
+	i=0
+	out=""
+	while IFS= read -r byte; do
+		[ -z "$byte" ] && continue
+		val=$((byte))
+		# 密钥对应字节
+		local kpos=$((i % klen))
+		c=$(printf '%d' "'$(printf '%s' "$key" | cut -c$((kpos+1))-$((kpos+1)))")
+		[ -z "$c" ] && c=0
+		out="${out}$(printf "$(printf '\\x%x' $((val ^ c)))")"
+		i=$((i+1))
+	done <<EOF
+$hexbytes
+EOF
+	printf '%s' "$out"
+}
+
+start() {
+	# 遍历已保存账号，找到标记 autologin=1 的账号
+	local idx username enc_pwd operator login_name key auto
+	idx=0
+	username=""
+	while :; do
+		local uname
+		uname=$(uci -q get "$UCI_CONF".@account["$idx"].username 2>/dev/null)
+		[ -z "$uname" ] && break
+		auto=$(uci -q get "$UCI_CONF".@account["$idx"].autologin 2>/dev/null)
+		if [ "$auto" = "1" ]; then
+			username="$uname"
+			enc_pwd=$(uci -q get "$UCI_CONF".@account["$idx"].password 2>/dev/null)
+			operator=$(uci -q get "$UCI_CONF".@account["$idx"].operator 2>/dev/null)
+			break
+		fi
+		idx=$((idx+1))
+	done
+
+	if [ -z "$username" ]; then
+		log_msg "开机自动登录：没有账号被标记为开机登录，跳过"
+		return 0
+	fi
+
+	if [ -z "$enc_pwd" ]; then
+		log_msg "开机自动登录：账号 $username 缺少密码，跳过"
+		return 0
+	fi
+
+	key=$(get_device_key)
+	password=$(decrypt_pwd "$enc_pwd" "$key")
+
+	login_name="$username"
+	[ -n "$operator" ] && login_name="${username}@${operator}"
+
+	log_msg "开机自动登录：$login_name"
+
+	local out
+	out=$(python3 /usr/bin/SRUN_Login/srun_login.py --username "$login_name" --password "$password" 2>&1)
+	log_msg "登录结果：$out"
+}
+
+stop() {
+	return 0
+}
