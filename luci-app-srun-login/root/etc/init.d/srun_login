@@ -12,14 +12,13 @@ log_msg() {
 	echo "[$ts] $1" >> "$LOG_FILE" 2>/dev/null
 }
 
-# 获取设备密钥（与控制器 luci.controller.srun_login 的 get_device_key 保持一致）
+# 获取设备密钥（与控制器 luci.controller.srun_login 的 get_device_key 完全一致）
 get_device_key() {
 	local mac
-	mac=$(cat /sys/class/net/eth0/address 2>/dev/null | tr -d ':')
-	mac=$(echo "$mac" | tr -d '[:space:]')
+	# 只删冒号和换行/回车/制表符，不用 POSIX 字符类（busybox tr 对 [:space:] 解析有 bug，会误删十六进制字符）
+	mac=$(cat /sys/class/net/eth0/address 2>/dev/null | tr -d ':\r\n\t ')
 	if [ -z "$mac" ]; then
-		mac=$(awk 'NR==1{print}' /sys/class/net/eth*/address 2>/dev/null | tr -d ':')
-		mac=$(echo "$mac" | tr -d '[:space:]')
+		mac=$(awk 'NR==1{print}' /sys/class/net/eth*/address 2>/dev/null | tr -d ':\r\n\t ')
 	fi
 	if [ -z "$mac" ]; then
 		mac="srun-default-key-2024"
@@ -28,33 +27,52 @@ get_device_key() {
 }
 
 # XOR 解密：hex 字符串 + 密钥 -> 明文
-# 密钥每字节与数据循环异或
+# 直接调用 Lua，复用控制器 luci.controller.srun_login 中验证过的 xor_crypt/hex_decode 逻辑，保证与加密端一致
+# 通过环境变量传递参数，避免不同 Lua 版本 arg 表的兼容差异
 decrypt_pwd() {
 	local enc="$1"
 	local key="$2"
-	local klen i b kb val out c
 	[ -z "$enc" ] && { echo ""; return; }
-	[ -z "$key" ] && { echo "$enc"; return; }
+	SRUN_ENC="$enc" SRUN_KEY="$key" lua <<'LUAEOF'
+local enc = os.getenv("SRUN_ENC") or ""
+local key = os.getenv("SRUN_KEY") or ""
 
-	klen=${#key}
-	# 将 hex 转为字节（用 od 或逐两位处理）
-	local hexbytes
-	hexbytes=$(echo "$enc" | sed 's/../0x&\n/g')
-	i=0
-	out=""
-	while IFS= read -r byte; do
-		[ -z "$byte" ] && continue
-		val=$((byte))
-		# 密钥对应字节
-		local kpos=$((i % klen))
-		c=$(printf '%d' "'$(printf '%s' "$key" | cut -c$((kpos+1))-$((kpos+1)))")
-		[ -z "$c" ] && c=0
-		out="${out}$(printf "$(printf '\\x%x' $((val ^ c)))")"
-		i=$((i+1))
-	done <<EOF
-$hexbytes
-EOF
-	printf '%s' "$out"
+-- 十六进制解码（与控制器 hex_decode 一致）
+local function hex_decode(s)
+	if not s or s == "" then return "" end
+	return (s:gsub("%x%x", function(h) return string.char(tonumber(h, 16)) end))
+end
+
+-- 单字节按位异或（与控制器 byte_xor 一致，Lua 5.1 兼容纯算术实现）
+local function byte_xor(a, b)
+	local r = 0
+	local bit_val = 1
+	for _ = 1, 8 do
+		local ba = a % 2
+		local bb = b % 2
+		if ba ~= bb then r = r + bit_val end
+		a = math.floor(a / 2)
+		b = math.floor(b / 2)
+		bit_val = bit_val * 2
+	end
+	return r
+end
+
+-- XOR 解密（与控制器 xor_crypt 一致，密钥循环异或）
+local function xor_crypt(data, key)
+	if key == "" then return data end
+	local klen = #key
+	local out = {}
+	for i = 1, #data do
+		local b = data:byte(i)
+		local kb = key:byte(((i - 1) % klen) + 1)
+		out[i] = string.char(byte_xor(b, kb))
+	end
+	return table.concat(out)
+end
+
+io.write(xor_crypt(hex_decode(enc), key))
+LUAEOF
 }
 
 start() {
@@ -91,6 +109,16 @@ start() {
 
 	login_name="$username"
 	[ -n "$operator" ] && login_name="${username}@${operator}"
+
+	# 等待网络就绪：最多轮询 60 秒，直到能访问认证服务器
+	local tries=0
+	while [ $tries -lt 60 ]; do
+		if ping -c 1 -W 2 202.201.252.10 >/dev/null 2>&1; then
+			break
+		fi
+		tries=$((tries+1))
+		sleep 1
+	done
 
 	log_msg "开机自动登录：$login_name"
 
